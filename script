@@ -81,7 +81,7 @@ local function makeButton(y, text)
 end
 
 local espButton = makeButton(44, "ESP: OFF")
-local lockButton = makeButton(84, "Player Lock [H]: OFF")
+local lockButton = makeButton(84, "Aimbot [R]: OFF")
 
 -- Drag UI
 do
