@@ -1,0 +1,297 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local localPlayer = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+-- =========================
+-- Config
+-- =========================
+local CONFIG = {
+	HighlightFillColor = Color3.fromRGB(255, 80, 80),
+	HighlightOutlineColor = Color3.fromRGB(255, 255, 255),
+	HighlightFillTransparency = 0.7,
+	HighlightOutlineTransparency = 0,
+
+	LockMaxDistance = 300,
+	LockFovPixels = 220,
+	LockSmoothing = 0.18,
+	IgnoreTeammates = false, -- set true for team games
+}
+
+local LOCK_TOGGLE_KEY = Enum.KeyCode.H
+
+-- =========================
+-- State
+-- =========================
+local espEnabled = false
+local lockEnabled = false
+local currentLockedPlayer = nil
+local highlights = {} -- [Player] = Highlight
+
+-- =========================
+-- UI
+-- =========================
+local gui = Instance.new("ScreenGui")
+gui.Name = "AssistUI"
+gui.ResetOnSpawn = false
+gui.Parent = localPlayer:WaitForChild("PlayerGui")
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.fromOffset(240, 150)
+frame.Position = UDim2.fromOffset(20, 120)
+frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+frame.BorderSizePixel = 0
+frame.Parent = gui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 8)
+corner.Parent = frame
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -20, 0, 28)
+title.Position = UDim2.fromOffset(10, 8)
+title.BackgroundTransparency = 1
+title.Text = "Training Assist (Studio)"
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Font = Enum.Font.GothamBold
+title.TextSize = 14
+title.Parent = frame
+
+local function makeButton(y, text)
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(1, -20, 0, 32)
+	btn.Position = UDim2.fromOffset(10, y)
+	btn.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+	btn.BorderSizePixel = 0
+	btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	btn.Font = Enum.Font.Gotham
+	btn.TextSize = 14
+	btn.Text = text
+	btn.AutoButtonColor = true
+	btn.Parent = frame
+
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, 6)
+	c.Parent = btn
+
+	return btn
+end
+
+local espButton = makeButton(44, "ESP: OFF")
+local lockButton = makeButton(84, "Player Lock [H]: OFF")
+
+-- Drag UI
+do
+	local dragging = false
+	local dragStart
+	local startPos
+
+	frame.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = true
+			dragStart = input.Position
+			startPos = frame.Position
+
+			input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End then
+					dragging = false
+				end
+			end)
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+			local delta = input.Position - dragStart
+			frame.Position = UDim2.new(
+				startPos.X.Scale, startPos.X.Offset + delta.X,
+				startPos.Y.Scale, startPos.Y.Offset + delta.Y
+			)
+		end
+	end)
+end
+
+-- =========================
+-- ESP / Highlight
+-- =========================
+local function removeHighlightForPlayer(player)
+	local hl = highlights[player]
+	if hl then
+		hl:Destroy()
+		highlights[player] = nil
+	end
+end
+
+local function addHighlightForPlayer(player)
+	if player == localPlayer then
+		return
+	end
+	if highlights[player] then
+		return
+	end
+
+	local character = player.Character
+	if not character or not character.Parent then
+		return
+	end
+
+	local hl = Instance.new("Highlight")
+	hl.Name = "ESPHighlight"
+	hl.Adornee = character
+	hl.FillColor = CONFIG.HighlightFillColor
+	hl.OutlineColor = CONFIG.HighlightOutlineColor
+	hl.FillTransparency = CONFIG.HighlightFillTransparency
+	hl.OutlineTransparency = CONFIG.HighlightOutlineTransparency
+	hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	hl.Parent = gui -- local-only visual
+	highlights[player] = hl
+end
+
+local function refreshAllHighlights()
+	for _, p in ipairs(Players:GetPlayers()) do
+		if espEnabled then
+			addHighlightForPlayer(p)
+		else
+			removeHighlightForPlayer(p)
+		end
+	end
+end
+
+Players.PlayerAdded:Connect(function(p)
+	p.CharacterAdded:Connect(function()
+		if espEnabled then
+			task.wait(0.1)
+			addHighlightForPlayer(p)
+		end
+	end)
+end)
+
+Players.PlayerRemoving:Connect(function(p)
+	removeHighlightForPlayer(p)
+	if currentLockedPlayer == p then
+		currentLockedPlayer = nil
+	end
+end)
+
+for _, p in ipairs(Players:GetPlayers()) do
+	p.CharacterAdded:Connect(function()
+		if espEnabled then
+			task.wait(0.1)
+			addHighlightForPlayer(p)
+		end
+	end)
+end
+
+espButton.MouseButton1Click:Connect(function()
+	espEnabled = not espEnabled
+	espButton.Text = espEnabled and "ESP: ON" or "ESP: OFF"
+	refreshAllHighlights()
+end)
+
+-- =========================
+-- Player Lock
+-- =========================
+local function setLockEnabled(enabled)
+	lockEnabled = enabled
+	lockButton.Text = lockEnabled and "Player Lock [H]: ON" or "Player Lock [H]: OFF"
+	if not lockEnabled then
+		currentLockedPlayer = nil
+	end
+end
+
+local function isAliveCharacter(character)
+	if not character then
+		return false
+	end
+	local hum = character:FindFirstChildOfClass("Humanoid")
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	return hum ~= nil and hrp ~= nil and hum.Health > 0
+end
+
+local function canTargetPlayer(p)
+	if p == localPlayer then
+		return false
+	end
+	if CONFIG.IgnoreTeammates and p.Team and localPlayer.Team and p.Team == localPlayer.Team then
+		return false
+	end
+	return isAliveCharacter(p.Character)
+end
+
+local function getNearestPlayerToCrosshair()
+	local myChar = localPlayer.Character
+	if not isAliveCharacter(myChar) then
+		return nil
+	end
+
+	local myRoot = myChar:FindFirstChild("HumanoidRootPart")
+	if not myRoot then
+		return nil
+	end
+
+	local viewportCenter = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+	local bestPlayer = nil
+	local bestScore = math.huge
+
+	for _, p in ipairs(Players:GetPlayers()) do
+		if canTargetPlayer(p) then
+			local hrp = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+			if hrp then
+				local distance = (hrp.Position - myRoot.Position).Magnitude
+				if distance <= CONFIG.LockMaxDistance then
+					local screenPos, onScreen = camera:WorldToViewportPoint(hrp.Position)
+					if onScreen then
+						local delta = (Vector2.new(screenPos.X, screenPos.Y) - viewportCenter).Magnitude
+						if delta <= CONFIG.LockFovPixels and delta < bestScore then
+							bestScore = delta
+							bestPlayer = p
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return bestPlayer
+end
+
+-- GUI toggle (optional)
+lockButton.MouseButton1Click:Connect(function()
+	setLockEnabled(not lockEnabled)
+end)
+
+-- Keyboard toggle: H
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then
+		return
+	end
+
+	if input.KeyCode == LOCK_TOGGLE_KEY then
+		setLockEnabled(not lockEnabled)
+	end
+end)
+
+RunService.RenderStepped:Connect(function()
+	if not lockEnabled then
+		return
+	end
+
+	if not currentLockedPlayer or not canTargetPlayer(currentLockedPlayer) then
+		currentLockedPlayer = getNearestPlayerToCrosshair()
+	end
+	if not currentLockedPlayer then
+		return
+	end
+
+	local targetHRP = currentLockedPlayer.Character and currentLockedPlayer.Character:FindFirstChild("HumanoidRootPart")
+	if not targetHRP then
+		return
+	end
+
+	local camPos = camera.CFrame.Position
+	local targetLook = CFrame.lookAt(camPos, targetHRP.Position)
+	camera.CFrame = camera.CFrame:Lerp(targetLook, CONFIG.LockSmoothing)
+end)
